@@ -197,6 +197,11 @@ account_sid = "env(TWILIO_ACCOUNT_SID)"
 message_service_sid = "env(TWILIO_VERIFY_SERVICE_SID)"
 auth_token = "env(TWILIO_AUTH_TOKEN)"
 
+# TEST OTP - allows testing with a fixed code without Twilio SMS delivery
+# Remove this block before go-live on a paid Twilio account
+[auth.sms.test_otp]
+"9620792084333" = "123456"
+
 # ============================================================
 # GOOGLE OAUTH
 # ============================================================
