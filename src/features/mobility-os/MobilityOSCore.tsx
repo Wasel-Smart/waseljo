@@ -10,7 +10,7 @@ import {
   Users,
   Zap,
 } from 'lucide-react';
-import { C, F, FM, GRAD_AURORA, GRAD_HERO, R, SH } from '../../utils/wasel-ds';
+import { F, FM, R, SH } from '../../utils/wasel-ds';
 import { MobilityOSLandingMap } from '../home/MobilityOSLandingMap';
 import type { BookingType, CorridorProjection } from './model';
 import { useMobilityOSServerState } from './serverState';
@@ -30,8 +30,7 @@ type SystemMetric = {
 function panelStyle(extra: CSSProperties = {}): CSSProperties {
   return {
     position: 'relative',
-    background: GRAD_HERO,
-    border: `1px solid ${'var(--border)'}`,
+    background: border: `1px solid ${'var(--border)'}`,
     borderRadius: R['3xl'],
     boxShadow: SH.lg,
     overflow: 'hidden',
@@ -530,8 +529,8 @@ export default function MobilityOSCore() {
           className={styles.modeGrid}
         >
           {[
-            [tx('mobilityOSCore.unit_label'), money(selectedUnitPrice), C.gold, C.goldDim],
-            [tx('common.total'), money(selectedUnitPrice * quantity), C.green, C.greenDim],
+            [tx('mobilityOSCore.unit_label'), money(selectedUnitPrice).gold.goldDim],
+            [tx('common.total'), money(selectedUnitPrice * quantity).green.greenDim],
           ].map(([label, value, accent, fill]) => (
             <div
               key={label}

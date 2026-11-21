@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react';
-import { C, F, R, SH, SPACE, TYPE } from '../../../utils/wasel-ds';
+import { F, R, SH, SPACE, TYPE } from '../../../utils/wasel-ds';
 import { StatusBadge } from '../../../components/wasel-ui/WaselPagePrimitives';
 import { stateAccent, type TrustStepState } from './VerificationSteps';
 

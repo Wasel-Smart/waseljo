@@ -54,7 +54,7 @@ import {
   scoreRideForRecommendation,
 } from '../../../pages/waselCorePageHelpers';
 import { readStoredStringList, writeStoredStringList } from '../../../pages/waselCoreStorage';
-import { DS, midpoint, resolveCityCoord } from '../../../pages/waselServiceShared';
+import { DS, resolveCityCoord } from '../../../pages/waselServiceShared';
 import { getFindRideStaticCopy } from '../findRideContent';
 import { useRideInventory } from '../useRideInventory';
 

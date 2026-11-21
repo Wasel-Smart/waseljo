@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { ArrowRight, Target } from 'lucide-react';
 import type { CorridorBetaPlan } from '../../../services/corridorBeta';
-import { C, R, SH, TYPE } from '../../../utils/wasel-ds';
+import { R, SH, TYPE } from '../../../utils/wasel-ds';
 import { stageLabel, stageColor, corridorLabel, corridorReason, corridorNextAction, metricLabel } from './corridorBetaHelpers';
 
 interface CorridorBetaFocusSectionProps {

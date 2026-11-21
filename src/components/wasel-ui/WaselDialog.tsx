@@ -4,7 +4,7 @@
 
 import { X } from 'lucide-react';
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef } from 'react';
-import { ANIM, C, F, R, SH, TYPE, Z } from '../../utils/wasel-ds';
+import { ANIM, F, R, SH, TYPE, Z } from '../../utils/wasel-ds';
 import { lockBodyScroll } from '../../utils/bodyScrollLock';
 import { WaselButton } from './WaselButton';
 

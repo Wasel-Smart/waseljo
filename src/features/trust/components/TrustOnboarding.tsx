@@ -1,4 +1,4 @@
-import { C, F, R, SPACE, TYPE } from '../../../utils/wasel-ds';
+import { F, R, SPACE, TYPE } from '../../../utils/wasel-ds';
 import { WaselButton } from '../../../components/wasel-ui/WaselButton';
 
 export function TrustOnboarding({

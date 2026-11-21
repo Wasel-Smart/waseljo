@@ -1,4 +1,4 @@
-import { C, F, R, TYPE } from '../../../utils/wasel-ds';
+import { F, R, TYPE } from '../../../utils/wasel-ds';
 
 export function FailureNotice({ message }: { message: string }) {
   return (
