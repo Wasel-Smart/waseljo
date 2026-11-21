@@ -346,12 +346,17 @@ export function useFindRideController() {
     try {
       const booking = await createRideBooking({
         rideId: ride.id,
-        userId: bookingUser.id,
+        passengerId: bookingUser.id,
+        ownerId: ride.driver.id,
         from:   ride.from,
         to:     ride.to,
-        seats:  1,
-        priceJod: finalPrice,
+        date:   ride.date ?? date,
+        time:   ride.time,
         driverName: ride.driver.name,
+        passengerName: bookingUser.full_name ?? bookingUser.email ?? 'Passenger',
+        seatsRequested: 1,
+        pricePerSeatJod: finalPrice,
+        routeMode: ride.routeMode ?? 'live_post',
       });
       setRideBookings(getRideBookings());
       setBookingSuccess({
@@ -551,13 +556,15 @@ export function useFindRideController() {
     pkg, setPkg,
     // display helpers
     statCards, intelligenceLines,
-    corridorPlan, marketplaceNodes: marketplaceNodes,
+    corridorPlan,
     // selected ride (for modal)
     selected, setSelected,
     // event handlers
     handleSearch, handleOpenRide, handleBook,
     handleDemandCapture, handleSaveReminder,
     getRideBookingStatus, openMyTrips, resolveSignalForRoute,
+    // recent searches
+    recentSearches,
     // push
     permission,
   };
