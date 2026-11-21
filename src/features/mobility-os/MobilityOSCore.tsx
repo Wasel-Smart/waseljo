@@ -30,7 +30,8 @@ type SystemMetric = {
 function panelStyle(extra: CSSProperties = {}): CSSProperties {
   return {
     position: 'relative',
-    background: border: `1px solid ${'var(--border)'}`,
+    background: 'radial-gradient(circle at top, rgba(0,229,255,0.18), rgba(114,199,13,0.08) 42%, rgba(8,29,57,0) 74%)',
+    border: `1px solid ${'var(--border)'}`,
     borderRadius: R['3xl'],
     boxShadow: SH.lg,
     overflow: 'hidden',
