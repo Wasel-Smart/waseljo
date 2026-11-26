@@ -137,19 +137,23 @@ export async function handlePackageRequest ( request: Request, path: string ) {
         .eq( 'trip_status', 'open' )
         .gt( 'package_slots_remaining', 0 );
 
+    // Escape ILIKE metacharacters so user-supplied city names are matched as
+    // literals and cannot be used as wildcard patterns.
+    const escapeLike = ( s: string ) => s.replace( /[%_\\]/g, '\\$&' );
+
     type CarrierCandidate = { trip_id: string; driver_id: string; package_slots_remaining: number };
     let candidate: CarrierCandidate | null = null;
     if ( originName && destName ) {
       const { data: exact } = await findOpenTrips()
-        .ilike( 'origin_city', `%${ originName }%` )
-        .ilike( 'destination_city', `%${ destName }%` )
+        .ilike( 'origin_city', `%${ escapeLike( originName ) }%` )
+        .ilike( 'destination_city', `%${ escapeLike( destName ) }%` )
         .limit( 1 )
         .maybeSingle();
       candidate = ( exact as CarrierCandidate | null ) ?? null;
     }
     if ( !candidate && destName ) {
       const { data: dest } = await findOpenTrips()
-        .ilike( 'destination_city', `%${ destName }%` )
+        .ilike( 'destination_city', `%${ escapeLike( destName ) }%` )
         .limit( 1 )
         .maybeSingle();
       candidate = ( dest as CarrierCandidate | null ) ?? null;
@@ -333,7 +337,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .select( 'package_id, sender_id, carrier_id, status, trip_id' )
       .eq( 'package_id', packageRoute.id )
       .maybeSingle();
-    if ( pkgErr ) {return json( { error: pkgErr.message }, 500 );}
+    if ( pkgErr ) {return packageServerError( 'lookup', pkgErr );}
     if ( !pkg ) {return json( { error: 'Package not found' }, 404 );}
     const isCarrier = pkg.carrier_id === auth.canonicalUser.id;
     const isSender = pkg.sender_id === auth.canonicalUser.id;
@@ -368,7 +372,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .eq( 'package_slots_remaining', remaining )
       .select( 'trip_id, driver_id' )
       .maybeSingle();
-    if ( claimError ) {return json( { error: claimError.message }, 500 );}
+    if ( claimError ) {return packageServerError( 'assign-to-trip-claim', claimError );}
     if ( !claimed ) {return json( { error: 'No package slots remaining on this trip.' }, 409 );}
 
     const { data, error } = await auth.admin
@@ -389,7 +393,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
         .update( { package_slots_remaining: remaining } )
         .eq( 'trip_id', tripId )
         .eq( 'package_slots_remaining', Math.max( 0, remaining - 1 ) );
-      return json( { error: error.message }, 500 );
+      return packageServerError( 'assign-to-trip-package-update', error );
     }
     await auth.admin.from( 'package_events' ).insert( {
       package_id: packageRoute.id,
@@ -406,7 +410,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .select( 'package_id, sender_id, carrier_id, status, pickup_verification_code, pickup_verified' )
       .eq( 'package_id', packageRoute.id )
       .maybeSingle();
-    if ( pkgErr ) {return json( { error: pkgErr.message }, 500 );}
+    if ( pkgErr ) {return packageServerError( 'verify-pickup-lookup', pkgErr );}
     if ( !pkg ) {return json( { error: 'Package not found' }, 404 );}
     // The assigned carrier (driver) or staff confirm collection from the sender.
     const isCarrier = pkg.carrier_id === auth.canonicalUser.id;
@@ -432,7 +436,9 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       { windowSeconds: 600, failClosed: true },
     );
     if ( limited ) {return limited;}
-    if ( !pkg.pickup_verification_code || !constantTimeEquals( code, pkg.pickup_verification_code ) ) {
+    // Codes are stored as SHA-256 hex hashes (migration 20261126020000).
+    const submittedPickupHash = await hashVerificationCode( code );
+    if ( !pkg.pickup_verification_code || !constantTimeEquals( submittedPickupHash, pkg.pickup_verification_code ) ) {
       return json( { error: 'Incorrect pickup code.' }, 403 );
     }
     const photo = typeof body.photo === 'string' ? body.photo.slice( 0, 1000 ) : null;
@@ -447,7 +453,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .eq( 'package_id', packageRoute.id )
       .select( '*' )
       .single();
-    if ( error ) {return json( { error: error.message }, 500 );}
+    if ( error ) {return packageServerError( 'verify-pickup-update', error );}
     await auth.admin.from( 'package_events' ).insert( {
       package_id: packageRoute.id,
       event_type: 'pickup_verified',
@@ -463,7 +469,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .select( 'package_id, sender_id, carrier_id, status, delivery_verification_code, delivery_verified' )
       .eq( 'package_id', packageRoute.id )
       .maybeSingle();
-    if ( pkgErr ) {return json( { error: pkgErr.message }, 500 );}
+    if ( pkgErr ) {return packageServerError( 'lookup', pkgErr );}
     if ( !pkg ) {return json( { error: 'Package not found' }, 404 );}
     // The receiver is not always an app user, so the assigned carrier (who matches
     // the code the receiver physically presents) or the sender may confirm
@@ -494,7 +500,9 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       { windowSeconds: 600, failClosed: true },
     );
     if ( limited ) {return limited;}
-    if ( !pkg.delivery_verification_code || !constantTimeEquals( code, pkg.delivery_verification_code ) ) {
+    // Codes are stored as SHA-256 hex hashes (migration 20261126020000).
+    const submittedDeliveryHash = await hashVerificationCode( code );
+    if ( !pkg.delivery_verification_code || !constantTimeEquals( submittedDeliveryHash, pkg.delivery_verification_code ) ) {
       return json( { error: 'Incorrect delivery code.' }, 403 );
     }
     const photo = typeof body.photo === 'string' ? body.photo.slice( 0, 1000 ) : null;
@@ -510,7 +518,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .eq( 'package_id', packageRoute.id )
       .select( '*' )
       .single();
-    if ( error ) {return json( { error: error.message }, 500 );}
+    if ( error ) {return packageServerError( 'verify-delivery-update', error );}
     await auth.admin.from( 'package_events' ).insert( {
       package_id: packageRoute.id,
       event_type: 'delivery_verified',

@@ -206,8 +206,11 @@ function toNumber(value: unknown, fallback = 0): number {
 }
 
 function mapPackageRow(row: Record<string, unknown>) {
+  // Strip verification code hashes -- never send stored hashes to clients.
+  // deno-lint-ignore no-unused-vars
+  const { pickup_verification_code, delivery_verification_code, ...rest } = row as Record<string, unknown>;
   return {
-    ...row,
+    ...rest,
     id: String(row.package_id ?? row.id ?? ''),
     package_id: String(row.package_id ?? row.id ?? ''),
     tracking_number: String(row.tracking_number ?? ''),
@@ -215,6 +218,25 @@ function mapPackageRow(row: Record<string, unknown>) {
     delivery_fee: toNumber(row.delivery_fee ?? row.fee_amount, 0),
     fee_amount: toNumber(row.fee_amount ?? row.delivery_fee, 0),
   };
+}
+
+/** Generate a 6-digit random code and return { plain, hash } where hash is a
+ *  SHA-256 hex digest suitable for storage. */
+async function generateVerificationCode(): Promise<{ plain: string; hash: string }> {
+  const array = new Uint32Array(1);
+  crypto.getRandomValues(array);
+  const plain = String(array[0] % 1_000_000).padStart(6, '0');
+  const encoded = new TextEncoder().encode(plain);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+  const hash = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return { plain, hash };
+}
+
+/** Hash a user-supplied plain code for comparison against the stored digest. */
+async function hashCode(plain: string): Promise<string> {
+  const encoded = new TextEncoder().encode(plain);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function parseEntityRoute(path: string, prefix: string) {
@@ -233,6 +255,8 @@ async function handlePackageRequest(request: Request, path: string) {
     const body = await request.json().catch(() => ({}));
     const packageFee = calculatePackageDeliveryFee(body.weight);
     const trackingNumber = `WSL-PKG-${crypto.randomUUID().split('-')[0].slice(0, 8).toUpperCase()}`;
+    const pickupCode = await generateVerificationCode();
+    const deliveryCode = await generateVerificationCode();
     const { data, error } = await auth.admin.from('packages').insert({
       tracking_number: trackingNumber, qr_code: trackingNumber,
       sender_id: auth.canonicalUser.id,
@@ -249,8 +273,10 @@ async function handlePackageRequest(request: Request, path: string) {
       delivery_fee: packageFee,
       fee_amount: packageFee,
       status: 'posted',
+      pickup_verification_code: pickupCode.hash,
+      delivery_verification_code: deliveryCode.hash,
     }).select('*').single();
-    if (error) {return json({ error: error.message }, 500);}
+    if (error) {return json({ error: 'Failed to create package' }, 500);}
 
     const packageId = String(data.package_id ?? data.id ?? '');
     const { data: trip } = await auth.admin.from('trips').select('trip_id, driver_id, available_seats, package_slots_remaining, trip_status').eq('allow_packages', true).eq('trip_status', 'open').gt('package_slots_remaining', 0).limit(1).maybeSingle();
@@ -264,13 +290,18 @@ async function handlePackageRequest(request: Request, path: string) {
       });
     }
 
-    return json({ package: mapPackageRow(data) });
+    return json({
+      package: mapPackageRow(data),
+      // Plain codes returned ONCE to the sender -- never stored, never re-sent.
+      pickup_code: pickupCode.plain,
+      delivery_code: deliveryCode.plain,
+    });
   }
 
   const packageRoute = parseEntityRoute(path, 'packages');
   if (request.method === 'GET' && packageRoute?.id) {
     const { data, error } = await auth.admin.from('packages').select('*').eq('package_id', packageRoute.id).maybeSingle();
-    if (error) {return json({ error: error.message }, 500);}
+    if (error) {return json({ error: 'Internal server error' }, 500);}
     if (!data) {return json({ error: 'Package not found' }, 404);}
     const isOwner = data.sender_id === auth.canonicalUser.id || data.carrier_id === auth.canonicalUser.id;
     if (!isOwner) {return json({ error: 'Not authorized to view this package.' }, 403);}
@@ -284,19 +315,68 @@ async function handlePackageRequest(request: Request, path: string) {
       return json({ error: 'Not authorized to view these packages.' }, 403);
     }
     const { data, error } = await auth.admin.from('packages').select('*').eq('sender_id', auth.canonicalUser.id).order('created_at', { ascending: false });
-    if (error) {return json({ error: error.message }, 500);}
+    if (error) {return json({ error: 'Internal server error' }, 500);}
     return json((Array.isArray(data) ? data : []).map(mapPackageRow));
   }
 
+  if (request.method === 'POST' && packageRoute?.id && packageRoute.action === 'verify-pickup') {
+    const body = await request.json().catch(() => ({}));
+    const submittedCode = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!submittedCode) {return json({ error: 'Verification code is required' }, 400);}
+    const { data: pkg, error: pkgErr } = await auth.admin.from('packages').select('package_id, sender_id, carrier_id, pickup_verification_code, pickup_verified, status').eq('package_id', packageRoute.id).maybeSingle();
+    if (pkgErr) {return json({ error: 'Internal server error' }, 500);}
+    if (!pkg) {return json({ error: 'Package not found' }, 404);}
+    // Only the carrier (driver) may confirm pickup.
+    if (pkg.carrier_id !== auth.canonicalUser.id) {return json({ error: 'Only the assigned carrier may confirm pickup.' }, 403);}
+    if (pkg.pickup_verified) {return json({ error: 'Pickup already verified.' }, 409);}
+    if (!pkg.pickup_verification_code) {return json({ error: 'No pickup code set for this package.' }, 409);}
+    const submittedHash = await hashCode(submittedCode);
+    if (!constantTimeEqual(submittedHash, String(pkg.pickup_verification_code))) {
+      return json({ error: 'Invalid pickup code.' }, 400);
+    }
+    const { data, error } = await auth.admin.from('packages').update({ pickup_verified: true, status: 'picked_up', pickup_verified_at: new Date().toISOString() }).eq('package_id', packageRoute.id).select('*').single();
+    if (error) {return json({ error: 'Internal server error' }, 500);}
+    return json({ ok: true, package: mapPackageRow(data) });
+  }
+
+  if (request.method === 'POST' && packageRoute?.id && packageRoute.action === 'verify-delivery') {
+    const body = await request.json().catch(() => ({}));
+    const submittedCode = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!submittedCode) {return json({ error: 'Verification code is required' }, 400);}
+    const { data: pkg, error: pkgErr } = await auth.admin.from('packages').select('package_id, sender_id, carrier_id, delivery_verification_code, delivery_verified, status').eq('package_id', packageRoute.id).maybeSingle();
+    if (pkgErr) {return json({ error: 'Internal server error' }, 500);}
+    if (!pkg) {return json({ error: 'Package not found' }, 404);}
+    // Only the carrier may confirm delivery.
+    if (pkg.carrier_id !== auth.canonicalUser.id) {return json({ error: 'Only the assigned carrier may confirm delivery.' }, 403);}
+    if (pkg.delivery_verified) {return json({ error: 'Delivery already verified.' }, 409);}
+    if (!pkg.delivery_verification_code) {return json({ error: 'No delivery code set for this package.' }, 409);}
+    const submittedHash = await hashCode(submittedCode);
+    if (!constantTimeEqual(submittedHash, String(pkg.delivery_verification_code))) {
+      return json({ error: 'Invalid delivery code.' }, 400);
+    }
+    const { data, error } = await auth.admin.from('packages').update({ delivery_verified: true, status: 'delivered', delivered_at: new Date().toISOString(), delivery_verified_at: new Date().toISOString() }).eq('package_id', packageRoute.id).select('*').single();
+    if (error) {return json({ error: 'Internal server error' }, 500);}
+    return json({ ok: true, package: mapPackageRow(data) });
+  }
+
   if (request.method === 'POST' && packageRoute?.id && packageRoute.action === 'deliver') {
-    const { data: pkg, error: pkgErr } = await auth.admin.from('packages').select('package_id, sender_id, carrier_id').eq('package_id', packageRoute.id).maybeSingle();
-    if (pkgErr) {return json({ error: pkgErr.message }, 500);}
+    // Legacy endpoint: requires delivery code for security.
+    const body = await request.json().catch(() => ({}));
+    const submittedCode = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!submittedCode) {return json({ error: 'Delivery verification code is required' }, 400);}
+    const { data: pkg, error: pkgErr } = await auth.admin.from('packages').select('package_id, sender_id, carrier_id, delivery_verification_code, delivery_verified').eq('package_id', packageRoute.id).maybeSingle();
+    if (pkgErr) {return json({ error: 'Internal server error' }, 500);}
     if (!pkg) {return json({ error: 'Package not found' }, 404);}
     const isCarrier = pkg.carrier_id === auth.canonicalUser.id;
-    const isSender = pkg.sender_id === auth.canonicalUser.id;
-    if (!isCarrier && !isSender) {return json({ error: 'Not authorized to deliver this package.' }, 403);}
-    const { data, error } = await auth.admin.from('packages').update({ status: 'delivered', delivered_at: new Date().toISOString() }).eq('package_id', packageRoute.id).select('*').single();
-    if (error) {return json({ error: error.message }, 500);}
+    if (!isCarrier) {return json({ error: 'Only the assigned carrier may mark a package as delivered.' }, 403);}
+    if (pkg.delivery_verified) {return json({ error: 'Delivery already verified.' }, 409);}
+    if (!pkg.delivery_verification_code) {return json({ error: 'No delivery code set for this package.' }, 409);}
+    const submittedHash = await hashCode(submittedCode);
+    if (!constantTimeEqual(submittedHash, String(pkg.delivery_verification_code))) {
+      return json({ error: 'Invalid delivery code.' }, 400);
+    }
+    const { data, error } = await auth.admin.from('packages').update({ status: 'delivered', delivered_at: new Date().toISOString(), delivery_verified: true, delivery_verified_at: new Date().toISOString() }).eq('package_id', packageRoute.id).select('*').single();
+    if (error) {return json({ error: 'Internal server error' }, 500);}
     return json(mapPackageRow(data));
   }
 
