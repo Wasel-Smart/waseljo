@@ -337,3 +337,6 @@ vitest.config.mjs
 
 .vercel
 .env*
+
+.vercel
+.env*

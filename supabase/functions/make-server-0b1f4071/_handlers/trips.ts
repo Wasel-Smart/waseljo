@@ -35,8 +35,11 @@ export async function handleTripRequest ( request: Request, path: string ) {
     const to = url.searchParams.get( 'to' );
     const date = url.searchParams.get( 'date' );
     const seats = url.searchParams.get( 'seats' );
-    if ( from ) {query = query.ilike( 'origin_city', `%${ from }%` );}
-    if ( to ) {query = query.ilike( 'destination_city', `%${ to }%` );}
+    // Escape ILIKE metacharacters (%, _) so a user-supplied search term cannot
+    // act as a wildcard pattern. The surrounding %…% is added by us, not them.
+    const escapeLike = ( s: string ) => s.replace( /[%_\\]/g, '\\$&' );
+    if ( from ) {query = query.ilike( 'origin_city', `%${ escapeLike( from ) }%` );}
+    if ( to ) {query = query.ilike( 'destination_city', `%${ escapeLike( to ) }%` );}
     if ( date ) {query = query.gte( 'departure_time', `${ date }T00:00:00` ).lt( 'departure_time', `${ date }T23:59:59.999` );}
     if ( seats ) {query = query.gte( 'available_seats', Number( seats ) );}
     const { data, error } = await query.in( 'trip_status', [ 'open', 'booked', 'in_progress' ] ).order( 'departure_time' );

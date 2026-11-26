@@ -25,6 +25,27 @@ function randomVerificationCode (): string {
   return String( 100000 + ( v % span ) );
 }
 
+/**
+ * SHA-256 hex digest of a plain-text code.
+ * Migration 20261126020000 changed the schema to store hashes; plain-text codes
+ * must NEVER be written to the DB — only the hash is stored and the plain code
+ * is returned once to the caller.
+ */
+async function hashVerificationCode ( plain: string ): Promise<string> {
+  const encoded = new TextEncoder().encode( plain );
+  const digest = await crypto.subtle.digest( 'SHA-256', encoded );
+  return Array.from( new Uint8Array( digest ) ).map( b => b.toString( 16 ).padStart( 2, '0' ) ).join( '' );
+}
+
+function packageServerError ( scope: string, error: unknown ): Response {
+  const requestId = crypto.randomUUID();
+  const detail = error && typeof error === 'object' && 'message' in error
+    ? String( ( error as { message?: unknown } ).message ?? '' )
+    : String( error );
+  console.error( `[packages] ${ scope } failed`, { requestId, detail } );
+  return json( { error: 'Something went wrong. Please try again.', code: 'internal_error', requestId }, 500 );
+}
+
 /** Constant-time string compare so a wrong code leaks no per-position timing
  * signal. Both inputs are already trimmed; the code length is fixed and not a secret. */
 function constantTimeEquals ( a: string, b: string ): boolean {
@@ -41,38 +62,63 @@ export async function handlePackageRequest ( request: Request, path: string ) {
   if ( 'error' in auth ) {return auth.error;}
 
   if ( request.method === 'POST' && path === '/packages' ) {
+    const limited = await consumeRateLimit( auth.admin, `package-create:${ auth.canonicalUser.id }`, 10, {
+      windowSeconds: 3600,
+      failClosed: true,
+    } );
+    if ( limited ) {return limited;}
+
     const body = await request.json().catch( () => ( {} ) );
     const packageFee = calculatePackageDeliveryFee( body.weight );
     const trackingNumber = `WSL-PKG-${ crypto.randomUUID().split( '-' )[ 0 ].slice( 0, 8 ).toUpperCase() }`;
     const pickupCode = randomVerificationCode();
     const deliveryCode = randomVerificationCode();
+
+    // Store only the SHA-256 hashes. Plain codes are returned once to the caller
+    // and never written to the DB (migration 20261126020000 changed the contract).
+    const [ pickupHash, deliveryHash ] = await Promise.all( [
+      hashVerificationCode( pickupCode ),
+      hashVerificationCode( deliveryCode ),
+    ] );
+
+    // Sanitise geo inputs: reject non-finite lat/lng to prevent malformed WKT.
+    const toSafeGeo = ( coords: unknown ): string | null => {
+      if ( !coords || typeof coords !== 'object' ) {return null;}
+      const c = coords as Record<string, unknown>;
+      const lng = Number( c.lng );
+      const lat = Number( c.lat );
+      if ( !Number.isFinite( lat ) || !Number.isFinite( lng ) ) {return null;}
+      if ( lat < -90 || lat > 90 || lng < -180 || lng > 180 ) {return null;}
+      return `SRID=4326;POINT(${ lng } ${ lat })`;
+    };
+
     const { data, error } = await auth.admin
       .from( 'packages' )
       .insert( {
         tracking_number: trackingNumber,
         qr_code: trackingNumber,
         sender_id: auth.canonicalUser.id,
-        receiver_name: String( body.receiver_name ?? '' ),
-        receiver_phone: String( body.receiver_phone ?? '' ),
-        origin_name: String( body.origin_name ?? body.from ?? '' ),
-        origin_location: body.origin_coords ? `SRID=4326;POINT(${ body.origin_coords.lng } ${ body.origin_coords.lat })` : null,
-        destination_name: String( body.destination_name ?? body.to ?? '' ),
-        destination_location: body.destination_coords ? `SRID=4326;POINT(${ body.destination_coords.lng } ${ body.destination_coords.lat })` : null,
-        size: String( body.size ?? 'medium' ),
+        receiver_name: String( body.receiver_name ?? '' ).trim().slice( 0, 200 ),
+        receiver_phone: String( body.receiver_phone ?? '' ).trim().slice( 0, 30 ),
+        origin_name: String( body.origin_name ?? body.from ?? '' ).trim().slice( 0, 200 ),
+        origin_location: toSafeGeo( body.origin_coords ),
+        destination_name: String( body.destination_name ?? body.to ?? '' ).trim().slice( 0, 200 ),
+        destination_location: toSafeGeo( body.destination_coords ),
+        size: String( body.size ?? 'medium' ).trim().slice( 0, 20 ),
         weight_kg: toNumber( body.weight, 0 ),
-        description: String( body.description ?? '' ),
+        description: String( body.description ?? '' ).trim().slice( 0, 500 ),
         declared_value: toNumber( body.declared_value, 0 ),
         fragile: Boolean( body.fragile ),
         delivery_fee: packageFee,
         fee_amount: packageFee,
         status: 'posted',
-        pickup_verification_code: pickupCode,
-        delivery_verification_code: deliveryCode,
+        pickup_verification_code: pickupHash,
+        delivery_verification_code: deliveryHash,
         escrow_status: 'pending',
       } )
       .select( '*' )
       .single();
-    if ( error ) {return json( { error: error.message }, 500 );}
+    if ( error ) {return packageServerError( 'create-package', error );}
 
     const packageId = String( data.package_id ?? data.id ?? '' );
     const originName = String( body.origin_name ?? body.from ?? '' ).trim();
@@ -168,7 +214,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .select( '*' )
       .eq( 'package_id', packageRoute.id )
       .maybeSingle();
-    if ( error ) {return json( { error: error.message }, 500 );}
+    if ( error ) {return packageServerError( 'get-package', error );}
     if ( !data ) {return json( { error: 'Package not found' }, 404 );}
     const isOwner = data.sender_id === auth.canonicalUser.id || data.carrier_id === auth.canonicalUser.id;
     const isStaff = hasPermission( resolveAccessRole( auth.canonicalUser.role ), 'packages:read' );
@@ -190,31 +236,51 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .select( '*' )
       .eq( 'sender_id', userId )
       .order( 'created_at', { ascending: false } );
-    if ( error ) {return json( { error: error.message }, 500 );}
+    if ( error ) {return packageServerError( 'list-sender-packages', error );}
     return json( ( Array.isArray( data ) ? data : [] ).map( mapPackageRow ) );
   }
 
   if ( request.method === 'POST' && packageRoute?.id && packageRoute.action === 'deliver' ) {
     const { data: pkg, error: pkgErr } = await auth.admin
       .from( 'packages' )
-      .select( 'package_id, sender_id, carrier_id' )
+      .select( 'package_id, sender_id, carrier_id, delivery_verification_code, status' )
       .eq( 'package_id', packageRoute.id )
       .maybeSingle();
-    if ( pkgErr ) {return json( { error: pkgErr.message }, 500 );}
+    if ( pkgErr ) {return packageServerError( 'deliver-lookup', pkgErr );}
     if ( !pkg ) {return json( { error: 'Package not found' }, 404 );}
     const isCarrier = pkg.carrier_id === auth.canonicalUser.id;
-    const isSender = pkg.sender_id === auth.canonicalUser.id;
     const isStaff = hasPermission( resolveAccessRole( auth.canonicalUser.role ), 'packages:write' );
-    if ( !isCarrier && !isSender && !isStaff ) {
+    // Only the assigned carrier (or staff) may mark a package delivered.
+    // Senders are excluded intentionally: the delivery code proves physical handoff.
+    if ( !isCarrier && !isStaff ) {
       return json( { error: 'Not authorized to deliver this package.' }, 403 );
     }
+    if ( [ 'delivered', 'cancelled', 'returned' ].includes( String( pkg.status ) ) ) {
+      return json( { error: 'Package is already in a terminal state.' }, 409 );
+    }
+
+    // Staff bypass the code check (admin override / dispute resolution).
+    if ( !isStaff ) {
+      const deliveryBody = await request.json().catch( () => ( {} ) );
+      const submittedCode = String( deliveryBody.delivery_code ?? '' ).trim();
+      if ( !submittedCode ) {
+        return json( { error: 'delivery_code is required to confirm handoff.', code: 'CODE_REQUIRED' }, 400 );
+      }
+      const submittedHash = await hashVerificationCode( submittedCode );
+      const storedHash = String( pkg.delivery_verification_code ?? '' );
+      // Constant-time compare to avoid timing oracle on the hash.
+      if ( !constantTimeEquals( submittedHash, storedHash ) ) {
+        return json( { error: 'Delivery code is incorrect.', code: 'CODE_INVALID' }, 403 );
+      }
+    }
+
     const { data, error } = await auth.admin
       .from( 'packages' )
       .update( { status: 'delivered', delivered_at: new Date().toISOString() } )
       .eq( 'package_id', packageRoute.id )
       .select( '*' )
       .single();
-    if ( error ) {return json( { error: error.message }, 500 );}
+    if ( error ) {return packageServerError( 'deliver-update', error );}
     return json( mapPackageRow( data ) );
   }
 
@@ -224,7 +290,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .select( 'package_id, sender_id, carrier_id, status' )
       .eq( 'package_id', packageRoute.id )
       .maybeSingle();
-    if ( pkgErr ) {return json( { error: pkgErr.message }, 500 );}
+    if ( pkgErr ) {return packageServerError( 'status-lookup', pkgErr );}
     if ( !pkg ) {return json( { error: 'Package not found' }, 404 );}
     const isCarrier = pkg.carrier_id === auth.canonicalUser.id;
     const isSender = pkg.sender_id === auth.canonicalUser.id;
@@ -234,7 +300,10 @@ export async function handlePackageRequest ( request: Request, path: string ) {
     }
     const body = await request.json().catch( () => ( {} ) );
     const newStatus = String( body.status ?? '' ).trim();
-    const carrierId = body.carrierId ? String( body.carrierId ).trim() : null;
+    // Carrier ID reassignment is only allowed for staff with packages:assign.
+    const rawCarrierId = body.carrierId ? String( body.carrierId ).trim() : null;
+    const canReassign = hasPermission( resolveAccessRole( auth.canonicalUser.role ), 'packages:assign' );
+    const carrierId = rawCarrierId && canReassign ? rawCarrierId : null;
     const validStatuses = [ 'posted', 'assigned', 'in_transit', 'out_for_delivery', 'delivered', 'returned', 'cancelled' ];
     if ( !validStatuses.includes( newStatus ) ) {
       return json( { error: 'Invalid package status.' }, 400 );
@@ -248,7 +317,7 @@ export async function handlePackageRequest ( request: Request, path: string ) {
       .eq( 'package_id', packageRoute.id )
       .select( '*' )
       .single();
-    if ( error ) {return json( { error: error.message }, 500 );}
+    if ( error ) {return packageServerError( 'status-update', error );}
     await auth.admin.from( 'package_events' ).insert( {
       package_id: packageRoute.id,
       event_type: 'status_change',
