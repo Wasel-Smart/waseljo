@@ -90,7 +90,8 @@ END $$;
 -- ---------------------------------------------------------------------------
 -- 4. commission_config default row
 --    app_create_ride_booking falls back to this when a trip has no per-trip rate.
---    INSERT ... ON CONFLICT DO NOTHING is idempotent.
+--    Uses WHERE NOT EXISTS so it is safe regardless of whether a unique
+--    constraint on route_key exists.
 -- ---------------------------------------------------------------------------
 DO $$ BEGIN
   IF EXISTS (
@@ -98,7 +99,9 @@ DO $$ BEGIN
      WHERE table_schema = 'public' AND table_name = 'commission_config'
   ) THEN
     INSERT INTO public.commission_config (route_key, rate_pct, effective_from)
-    VALUES ('default', 12.00, '2026-01-01 00:00:00+00')
-    ON CONFLICT (route_key) DO NOTHING;
+    SELECT 'default', 12.00, '2026-01-01 00:00:00+00'
+    WHERE NOT EXISTS (
+      SELECT 1 FROM public.commission_config WHERE route_key = 'default'
+    );
   END IF;
 END $$;
