@@ -52,7 +52,7 @@ function withAlpha(color: string, alpha: number): string {
   // hex
   let hex = c.replace('#', '');
   if (hex.length === 3) {
-    hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    hex = hex[0]! + hex[0]! + hex[1]! + hex[1]! + hex[2]! + hex[2]!;
   }
   const n = parseInt(hex, 16);
   if (isNaN(n)) return `rgba(0,0,0,${alpha})`;
