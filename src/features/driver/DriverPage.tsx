@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, Brain, Network, ShieldCheck, Truck, Wifi, WifiOff } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Brain, Clock, Network, ShieldCheck, Truck, Wifi, WifiOff } from 'lucide-react';
 import { ProtectedPagePreview } from '../../components/system/ProtectedPagePreview';
 import { useLocalAuth } from '../../contexts/LocalAuth';
 import { useIframeSafeNavigate } from '../../hooks/useIframeSafeNavigate';
@@ -84,6 +84,32 @@ export default function DriverPage() {
             onClick: () => navigate('/app/offer-ride'),
           }}
         />
+
+        {/* ── Pending review banner ── */}
+        {readiness.status === 'pending_review' && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 14,
+              background: `${DS.gold}14`,
+              border: `1px solid ${DS.gold}44`,
+              borderRadius: r(16),
+              padding: '16px 20px',
+              marginBottom: 18,
+            }}
+          >
+            <Clock size={20} color={DS.gold} style={{ flexShrink: 0, marginTop: 2 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ color: 'var(--foreground)', fontWeight: 900, fontSize: '0.9rem' }}>
+                Documents received — waiting for Wasel approval
+              </div>
+              <div style={{ color: DS.sub, fontSize: '0.8rem', lineHeight: 1.6, marginTop: 4 }}>
+                Your driver documents are under review. The Wasel team approves accounts manually, usually within 24 hours. You will get a notification the moment you are cleared for live rides. No action needed right now.
+              </div>
+            </div>
+          </div>
+        )}
 
         <div
           className="sp-2col"
@@ -345,7 +371,7 @@ export default function DriverPage() {
                   >
                     {step.complete ? <ShieldCheck size={15} /> : <AlertTriangle size={15} />}
                   </div>
-                  <div>
+                  <div style={{ flex: 1 }}>
                     <div style={{ color: 'var(--foreground)', fontWeight: 800, fontSize: '0.8rem' }}>
                       {step.label}
                     </div>
@@ -359,6 +385,28 @@ export default function DriverPage() {
                     >
                       {step.description}
                     </div>
+                    {!step.complete && step.actionLink && (
+                      <button
+                        onClick={() => { navigate(step.actionLink!); }}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          marginTop: 8,
+                          padding: '5px 12px',
+                          borderRadius: '999px',
+                          border: `1px solid ${DS.gold}55`,
+                          background: `${DS.gold}12`,
+                          color: DS.gold,
+                          fontWeight: 800,
+                          fontSize: '0.72rem',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {step.actionLabel ?? 'Fix now'}
+                        <ArrowRight size={12} />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

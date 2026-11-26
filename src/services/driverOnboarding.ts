@@ -10,6 +10,11 @@ export type DriverReadinessStep = {
   label: string;
   description: string;
   complete: boolean;
+  /** Route to navigate to when the step is incomplete. */
+  actionLink?: string;
+  /** Button label for the action. */
+  actionLabel?: string;
+  actionLabelAr?: string;
 };
 
 export type DriverReadinessStatus =
@@ -35,30 +40,48 @@ function buildSteps(user: WaselUser | null | undefined): DriverReadinessStep[] {
       label: 'Driver role enabled',
       description: 'Turn on Driver mode in Trust Center.',
       complete: hasDriverRole(user),
+      actionLink: '/app/trust',
+      actionLabel: 'Open Trust Center',
+      actionLabelAr: 'افتح مركز الثقة',
     },
     {
       id: 'phone',
       label: 'Phone verified',
       description: 'Confirm your main phone number.',
       complete: Boolean(user?.phoneVerified),
+      actionLink: '/app/settings',
+      actionLabel: 'Verify phone',
+      actionLabelAr: 'تحقق من الهاتف',
     },
     {
       id: 'email',
       label: 'Email verified',
       description: 'Confirm your email.',
       complete: Boolean(user?.emailVerified),
+      actionLink: '/app/settings',
+      actionLabel: 'Verify email',
+      actionLabelAr: 'تحقق من البريد',
     },
     {
       id: 'driver_documents',
       label: 'Driver documents submitted',
       description: 'Add your driver license number in Trust Center.',
       complete: Boolean(user && hasSubmittedDriverDocuments(user)),
+      actionLink: '/app/trust',
+      actionLabel: 'Submit documents',
+      actionLabelAr: 'أرسل المستندات',
     },
     {
       id: 'driver_clearance',
       label: 'Driver clearance',
-      description: 'Final approval for live rides.',
+      description: Boolean(user && hasSubmittedDriverDocuments(user))
+        ? 'Your documents are under review. The Wasel team will approve your account — usually within 24 hours. You will be notified once cleared.'
+        : 'Submit your driver documents first. After submission the Wasel team reviews and approves your account for live rides.',
       complete: Boolean(user && isDriverCleared(user)),
+      // Only show the link before documents are submitted; once pending, there's nothing left to do
+      actionLink: Boolean(user && !hasSubmittedDriverDocuments(user)) ? '/app/trust' : undefined,
+      actionLabel: 'Go to Trust Center',
+      actionLabelAr: 'اذهب إلى مركز الثقة',
     },
   ];
 }
