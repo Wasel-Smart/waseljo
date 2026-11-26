@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.119.0';
 import { calculatePackageDeliveryFee } from './_shared/package-pricing.ts';
+import { checkDbRateLimit } from '../_shared/rate-limiter.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -253,6 +254,11 @@ async function handlePackageRequest(request: Request, path: string) {
 
   if (request.method === 'POST' && path === '/packages') {
     const body = await request.json().catch(() => ({}));
+
+    // Distributed rate limit: 10 package creations per hour per user.
+    const rl = await checkDbRateLimit(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, auth.canonicalUser.id, 'package-create', { maxAttempts: 10, windowMinutes: 60 });
+    if (!rl.allowed) {return json({ error: 'Too many package requests. Please wait before creating another.' }, 429);}
+
     const packageFee = calculatePackageDeliveryFee(body.weight);
     const trackingNumber = `WSL-PKG-${crypto.randomUUID().split('-')[0].slice(0, 8).toUpperCase()}`;
     const pickupCode = await generateVerificationCode();

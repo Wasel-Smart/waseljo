@@ -145,6 +145,39 @@ async function handleBookingRequest(request: Request, path: string) {
   if (request.method === 'PUT' && bookingRoute?.id) {
     const body = await request.json().catch(() => ({}));
     const status = body.status === 'accepted' ? 'confirmed' : body.status === 'rejected' ? 'cancelled' : String(body.status ?? 'cancelled');
+
+    // Verify the caller owns the trip this booking belongs to.
+    // Only the trip's driver may confirm or cancel a booking.
+    const { data: booking, error: bookingLookupErr } = await auth.admin
+      .from('bookings')
+      .select('booking_id, trip_id, passenger_id')
+      .eq('booking_id', bookingRoute.id)
+      .maybeSingle();
+    if (bookingLookupErr) {return json({ error: 'Internal server error' }, 500);}
+    if (!booking) {return json({ error: 'Booking not found' }, 404);}
+
+    // Allow the passenger to cancel their own booking; otherwise require driver ownership.
+    const isPassenger = booking.passenger_id === auth.canonicalUser.id;
+    if (isPassenger && status !== 'cancelled') {
+      return json({ error: 'Passengers may only cancel their own bookings.' }, 403);
+    }
+    if (!isPassenger) {
+      // Confirm the caller is the driver who owns the trip.
+      const { data: driver } = await auth.admin
+        .from('drivers')
+        .select('driver_id')
+        .eq('user_id', auth.canonicalUser.id)
+        .maybeSingle();
+      const { data: trip } = await auth.admin
+        .from('trips')
+        .select('driver_id')
+        .eq('trip_id', booking.trip_id)
+        .maybeSingle();
+      if (!driver || !trip || String(trip.driver_id) !== String(driver.driver_id)) {
+        return json({ error: 'Only the trip driver may update this booking.' }, 403);
+      }
+    }
+
     const { data, error } = await auth.admin.from('bookings').update({
       booking_status: status, status, confirmed_by_driver: status === 'confirmed',
     }).eq('booking_id', bookingRoute.id).select('*').single();
